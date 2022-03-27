@@ -9,40 +9,68 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"time"
 )
 
-func producer(stream Stream) (tweets []*Tweet) {
+func producer(ctx context.Context, stream Stream, tweets chan *Tweet) {
+	log.Println("PRODUCER")
+
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Recovered in PRODUCER", r)
+		}
+	}()
+	defer log.Println("PRODUCER Close")
+	defer close(tweets)
+
 	for {
 		tweet, err := stream.Next()
 		if err == ErrEOF {
-			return tweets
+			return
 		}
 
-		tweets = append(tweets, tweet)
+		select {
+		case <-ctx.Done():
+			return
+		case tweets <- tweet:
+		}
+
 	}
 }
 
-func consumer(tweets []*Tweet) {
-	for _, t := range tweets {
+func consumer(tweets <-chan *Tweet, done chan<- bool) {
+	log.Println("CONSUMER")
+	defer func() { done <- true }()
+	for t := range tweets {
 		if t.IsTalkingAboutGo() {
 			fmt.Println(t.Username, "\ttweets about golang")
 		} else {
 			fmt.Println(t.Username, "\tdoes not tweet about golang")
 		}
 	}
+
+	log.Println("CONSUMER Close")
+
 }
 
 func main() {
 	start := time.Now()
 	stream := GetMockStream()
-
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	tweets := make(chan *Tweet, 3)
+	done := make(chan bool)
 	// Producer
-	tweets := producer(stream)
-
+	go producer(ctx, stream, tweets)
 	// Consumer
-	consumer(tweets)
+	go consumer(tweets, done)
+	go consumer(tweets, done)
+	go consumer(tweets, done)
 
+	<-done
+	cancel()
 	fmt.Printf("Process took %s\n", time.Since(start))
 }
